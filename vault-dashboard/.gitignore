@@ -1,0 +1,14 @@
+# IDEs
+.vscode
+.idea
+
+# Build/Dist
+dist
+node_modules
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

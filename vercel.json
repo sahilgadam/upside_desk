@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/vault-backend/server.js" },
+    { "source": "/(.*)", "destination": "/vault-dashboard/index.html" }
+  ]
+}
