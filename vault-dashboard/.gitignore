@@ -3,8 +3,8 @@
 .idea
 
 # Build/Dist
-dist
-node_modules
+dist/
+node_modules/
 
 # Environment
 .env

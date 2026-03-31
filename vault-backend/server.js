@@ -1,91 +1,104 @@
-// ============================================================
-//  UPSIDE DESK - Secure Backend Server (Refactored)
-// ============================================================
+/* vault-backend/server.js */
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BLYNK_TOKEN = process.env.BLYNK_TOKEN;
 const BLYNK_BASE_URL = "https://blynk.cloud/external/api";
+const LOG_FILE = path.join(__dirname, "logs.json");
+
+// ─── UTILS: PERSISTENCE ───────────────────────────────────────
+let accessLogs = [];
+const loadLogs = () => {
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      const data = fs.readFileSync(LOG_FILE, "utf8");
+      if (data && data.trim()) {
+        accessLogs = JSON.parse(data);
+        console.log(`💾 Loaded ${accessLogs.length} logs from file.`);
+      }
+    }
+  } catch (e) {
+    console.error("❌ Failed to load logs:", e.message);
+    accessLogs = [];
+  }
+};
+const saveLogs = () => {
+  try {
+    fs.writeFileSync(LOG_FILE, JSON.stringify(accessLogs, null, 2));
+  } catch (e) {
+    console.error("❌ Failed to save logs:", e.message);
+  }
+};
+loadLogs();
 
 // ─── MIDDLEWARE ───────────────────────────────────────────────
-app.use(cors({ origin: process.env.CORS_ORIGIN || "*" })); 
+app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json());
 
-// ─── LOG STORE ────────────────────────────────────────────────
-const accessLogs = [];
 const timestamp = () => new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
-// ─── ENDPOINTS ────────────────────────────────────────────────
+// ─── API ROUTES ───────────────────────────────────────────────
 
-// 1. Health Check
-app.get("/", (req, res) => res.json({ status: "online", version: "1.0.1" }));
+app.get("/api/status", (req, res) => {
+  res.json({ system: "UPSIDE DESK", running: true, auth: !!BLYNK_TOKEN });
+});
 
-// 2. Blynk Webhook (/access)
-app.post("/access", (req, res) => {
+app.get("/api/logs", (req, res) => {
+  res.json({ count: accessLogs.length, logs: accessLogs.slice().reverse() });
+});
+
+app.post("/api/access", (req, res) => {
   try {
     const { status, flag } = req.body;
-    if (!status) return res.status(400).json({ error: "Invalid payload from Blynk" });
+  
+    if (!status) {
+      return res.status(400).json({ error: "Missing required 'status' field." });
+    }
 
-    const logEntry = {
+    const entry = {
       id: Date.now(),
-      status: status,
+      status,
       flag: flag || "0",
-      timestamp: timestamp(),
+      timestamp: timestamp()
     };
 
-    accessLogs.push(logEntry);
-    console.log(`\n🔔 ACCESS EVENT: ${status} | Flag: ${flag}`);
-    console.log(`   Time: ${logEntry.timestamp}`);
-    res.status(200).json({ message: "Recorded" });
+    accessLogs.push(entry);
+    if (accessLogs.length > 50) accessLogs.shift();
+    saveLogs();
+
+    console.log(`🔔 ACCESS: ${status} | Time: ${entry.timestamp}`);
+    res.status(200).json({ success: true, entry });
   } catch (err) {
+    console.error("Access Endpoint Error:", err.message);
     res.status(500).json({ error: "Failed to record log" });
   }
 });
 
-// 3. Fetch Logs (/logs)
-app.get("/logs", (req, res) => res.json({ logs: accessLogs }));
+app.post("/api/control", async (req, res) => {
+  const { value, pin = "V2" } = req.body;
 
-// 4. Get Status (/status) - Proxies Blynk V0, V1
-app.get("/status", async (req, res) => {
-  try {
-    const [resV0, resV1] = await Promise.all([
-      axios.get(`${BLYNK_BASE_URL}/get?token=${BLYNK_TOKEN}&V0`),
-      axios.get(`${BLYNK_BASE_URL}/get?token=${BLYNK_TOKEN}&V1`)
-    ]);
-    res.json({
-      v0: resV0.data,
-      v1: resV1.data
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch status from Blynk" });
+  if (value === undefined) {
+    return res.status(400).json({ error: "Missing 'value' in control request." });
   }
-});
-
-// 5. Send Control command (/control)
-app.post("/control", async (req, res) => {
-  const { value, pin = "V2" } = req.body; // value: 1 (unlock), 0 (lock)
-
-  if (value === undefined) return res.status(400).json({ error: "Missing value" });
 
   try {
     const url = `${BLYNK_BASE_URL}/update?token=${BLYNK_TOKEN}&${pin}=${value}`;
-    console.log(`🎮 Sending ${pin} Command: ${value}`);
     const response = await axios.get(url);
     res.json({ success: true, blynk_status: response.status });
   } catch (err) {
-    console.error("❌ Blynk Link Error:", err.message);
     res.status(500).json({ error: "Blynk connection failed" });
   }
 });
 
 // ─── START ────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log("\n╔══════════════════════════════════════════╗");
-  console.log("║   🔐 UPSIDE DESK - Backend Active       ║");
-  console.log(`║   Port: ${PORT}                            ║`);
-  console.log("╚══════════════════════════════════════════╝\n");
+  console.log(`\n✅ UPSIDE DESK - Backend Active on Port ${PORT}\n`);
 });
+
+module.exports = app;
