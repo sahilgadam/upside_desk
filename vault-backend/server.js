@@ -8,7 +8,7 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const BLYNK_TOKEN = process.env.BLYNK_TOKEN;
+const BLYNK_TOKEN = process.env.BLYNK_TOKEN; // Set securely via Render environment
 const BLYNK_BASE_URL = "https://blynk.cloud/external/api";
 const LOG_FILE = path.join(__dirname, "logs.json");
 
