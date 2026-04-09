@@ -1,7 +1,7 @@
 /* src/hooks/useVaultLogs.js */
 import { useState, useEffect } from 'react';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+const BACKEND_URL = 'http://localhost:3000';
 
 const useVaultLogs = () => {
   const [logs, setLogs] = useState([]);
@@ -10,7 +10,8 @@ const useVaultLogs = () => {
   useEffect(() => {
     const fetchLogs = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/logs`);
+        // FIXED: Added /api to the route
+        const res = await fetch(`${BACKEND_URL}/api/logs`);
         if (!res.ok) throw new Error();
         const data = await res.json();
         

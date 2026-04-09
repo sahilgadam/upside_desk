@@ -8,7 +8,7 @@ const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const BLYNK_TOKEN = process.env.BLYNK_TOKEN; // Set securely via Render environment
+const BLYNK_TOKEN = process.env.BLYNK_TOKEN; 
 const BLYNK_BASE_URL = "https://blynk.cloud/external/api";
 const LOG_FILE = path.join(__dirname, "logs.json");
 
@@ -45,8 +45,39 @@ const timestamp = () => new Date().toLocaleString("en-IN", { timeZone: "Asia/Kol
 
 // ─── API ROUTES ───────────────────────────────────────────────
 
-app.get("/api/status", (req, res) => {
-  res.json({ system: "UPSIDE DESK", running: true, auth: !!BLYNK_TOKEN });
+app.get("/api/status", async (req, res) => {
+  // If the .env file is missing the token, tell the frontend immediately
+  if (!BLYNK_TOKEN) {
+    return res.json({ system: "UPSIDE DESK", running: true, auth: false });
+  }
+
+  let v0Data = "LOCKED";
+  let v1Data = "000";
+
+  // Safely fetch V0 (Lock Status)
+  try {
+    const v0Res = await axios.get(`${BLYNK_BASE_URL}/get?token=${BLYNK_TOKEN}&v0`);
+    v0Data = v0Res.data;
+  } catch (err) {
+    console.error("V0 Fetch Error (Pin might be empty)");
+  }
+
+  // Safely fetch V1 (Sensor Data)
+  try {
+    const v1Res = await axios.get(`${BLYNK_BASE_URL}/get?token=${BLYNK_TOKEN}&v1`);
+    v1Data = v1Res.data;
+  } catch (err) {
+    console.error("V1 Fetch Error (Pin might be empty)");
+  }
+
+  // Send the combined data to the React dashboard
+  res.json({ 
+    system: "UPSIDE DESK", 
+    running: true, 
+    auth: true,
+    v0: v0Data,
+    v1: v1Data
+  });
 });
 
 app.get("/api/logs", (req, res) => {

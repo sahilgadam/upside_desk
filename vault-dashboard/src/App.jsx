@@ -6,7 +6,7 @@ import useGlitchEffect from './hooks/useGlitchEffect.jsx';
 import useVaultLogs from './hooks/useVaultLogs.js';
 import './index.css';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+const BACKEND_URL = 'http://localhost:3000';
 const MOCK_MODE = false; // Set to true to test UI without hardware
 const INACTIVITY_TIMEOUT = 30;
 
@@ -38,7 +38,8 @@ const App = () => {
     const interval = setInterval(async () => {
       if (MOCK_MODE) return;
       try {
-        const res = await fetch(`${BACKEND_URL}/status`);
+        // FIXED: Added /api to the route
+        const res = await fetch(`${BACKEND_URL}/api/status`);
         if (res.ok) {
           const data = await res.json();
           const sText = Array.isArray(data.v0) ? data.v0[0] : data.v0;
@@ -110,8 +111,8 @@ const App = () => {
     setShowIris(false);
     setAccessStatus('LOCKED');
     if (!MOCK_MODE) {
-      // Set status text back to LOCKED via backend proxy
-      fetch(`${BACKEND_URL}/control`, {
+      // FIXED: Added /api to the route
+      fetch(`${BACKEND_URL}/api/control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: 'LOCKED', pin: 'V0' }),
@@ -217,7 +218,8 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
     const label = value === 1 ? 'unlock' : 'lock';
     setLastCmd(label);
     try {
-      const res = await fetch(`${url}/control`, {
+      // FIXED: Added /api to the route
+      const res = await fetch(`${url}/api/control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value, pin: 'V2' }),
