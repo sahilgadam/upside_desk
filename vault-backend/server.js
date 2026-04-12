@@ -3,7 +3,9 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
+const crypto = require("crypto");
 const fs = require("fs");
+const nodemailer = require("nodemailer");
 const path = require("path");
 
 const app = express();
@@ -42,8 +44,87 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json());
 
 const timestamp = () => new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
+const OTP_EXPIRY_MS = Number(process.env.OTP_EXPIRY_MS || 300000);
+const otpLifetimeMs = Number.isFinite(OTP_EXPIRY_MS) && OTP_EXPIRY_MS > 0 ? OTP_EXPIRY_MS : 300000;
+const otpExpiresInMinutes = Math.ceil(otpLifetimeMs / 60000);
+const transporter =
+  EMAIL_USER && EMAIL_PASS
+    ? nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: EMAIL_USER,
+          pass: EMAIL_PASS
+        }
+      })
+    : null;
+const otpStore = new Map();
 
 // ─── API ROUTES ───────────────────────────────────────────────
+
+app.post("/api/auth/request-otp", async (req, res) => {
+  try {
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+
+    if (!email) {
+      return res.status(400).json({ success: false, error: "Email is required" });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ success: false, error: "Invalid email format" });
+    }
+
+    if (!transporter) {
+      return res.status(500).json({ success: false, error: "Email service is not configured" });
+    }
+
+    const otp = String(crypto.randomInt(100000, 1000000));
+    otpStore.set(email, { otp, expiresAt: Date.now() + otpLifetimeMs });
+
+    await transporter.sendMail({
+      from: EMAIL_USER,
+      to: email,
+      subject: "Vault Access OTP",
+      text: `Your OTP is: ${otp}. It expires in ${otpExpiresInMinutes} minutes.`
+    });
+
+    return res.json({ success: true, message: "OTP sent" });
+  } catch (err) {
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    if (email) otpStore.delete(email);
+    console.error("OTP Request Error:", err.message);
+    return res.status(500).json({ success: false, error: "Failed to send OTP" });
+  }
+});
+
+app.post("/api/auth/verify-otp", (req, res) => {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const otp = typeof req.body?.otp === "string" ? req.body.otp.trim() : "";
+
+  if (!email || !otp) {
+    return res.status(400).json({ success: false, message: "Email and OTP are required" });
+  }
+
+  const storedOtp = otpStore.get(email);
+
+  if (!storedOtp) {
+    return res.status(401).json({ success: false, message: "No OTP requested" });
+  }
+
+  if (Date.now() > storedOtp.expiresAt) {
+    otpStore.delete(email);
+    return res.status(401).json({ success: false, message: "OTP expired" });
+  }
+
+  if (storedOtp.otp !== otp) {
+    return res.status(401).json({ success: false, message: "Invalid OTP" });
+  }
+
+  otpStore.delete(email);
+  return res.status(200).json({ success: true, message: "Access granted" });
+});
 
 app.get("/api/status", async (req, res) => {
   // If the .env file is missing the token, tell the frontend immediately

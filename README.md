@@ -1,19 +1,28 @@
-# 🔐 UPSIDE DESK - Morse Code Digital Vault
+# UPSIDE DESK - Morse Code Digital Vault
 
 A secure authentication system using ESP32, Blynk Cloud, and a modern React dashboard.
 
-## 📁 Project Structure
-- `vault-backend`: Node.js/Express API (Proxies Blynk calls, stores logs).
-- `vault-dashboard`: React + Vite Frontend (Premium UI with Framer Motion).
+## Project Structure
+- `vault-backend`: Node.js/Express API that proxies Blynk calls, sends OTP emails, and stores logs.
+- `vault-dashboard`: React + Vite frontend with the vault auth flow and dashboard UI.
 
-## 🚀 Local Setup
+## Local Setup
 
 ### 1. Backend
 ```bash
 cd vault-backend
 npm install
-# Create .env and add your BLYNK_TOKEN
 npm start
+```
+
+Create `vault-backend/.env` with:
+```env
+BLYNK_TOKEN=your_blynk_token
+CORS_ORIGIN=http://localhost:5173
+PORT=3000
+EMAIL_USER=your_gmail@gmail.com
+EMAIL_PASS=your_gmail_app_password
+OTP_EXPIRY_MS=300000
 ```
 
 ### 2. Frontend
@@ -24,19 +33,28 @@ npm install
 npm run dev
 ```
 
-## ☁️ Vercel Deployment (Monorepo)
+## Gmail App Password Setup
+1. Go to [myaccount.google.com](https://myaccount.google.com).
+2. Enable `2-Step Verification`.
+3. Go to `Security` -> `App Passwords`.
+4. Create one for `Mail` and copy the 16-character password.
+5. Put it in `vault-backend/.env` as `EMAIL_PASS` with no spaces.
 
-1. **Push to GitHub**: Initialize a Git repo in the root directory and push.
-2. **Import to Vercel**: Choose the root directory.
-3. **Environment Variables**: Add the following in Vercel settings:
-   - `BLYNK_TOKEN`: [Your Token]
-   - `CORS_ORIGIN`: [Your Dashboard URL]
-   - `VITE_BACKEND_URL`: [Your Backend API URL] (e.g. https://your-api.vercel.app)
-4. **Blynk Webhook**: Update your Blynk webhook to `https://your-api.vercel.app/api/access`.
+## Vercel Deployment (Monorepo)
+1. Push the repo to GitHub.
+2. Import the root directory into Vercel.
+3. Add these environment variables in Vercel:
+   - `BLYNK_TOKEN`
+   - `CORS_ORIGIN`
+   - `VITE_BACKEND_URL`
+   - `EMAIL_USER`
+   - `EMAIL_PASS`
+   - `OTP_EXPIRY_MS=300000`
+4. Update your Blynk webhook to `https://your-api.vercel.app/api/access`.
 
-## 🛠️ Security Checklist
+## Security Checklist
 - [x] Tokens moved to `.env`
 - [x] `.gitignore` prevents secret leaks
-- [x] Frontend no longer calls Blynk directly (Proxied via Backend)
+- [x] Frontend no longer calls Blynk directly
 - [x] CORS configured for production
-- [x] Input validation on all API endpoints
+- [x] Input validation on API endpoints
