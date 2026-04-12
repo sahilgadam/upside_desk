@@ -1,6 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ShieldCheck, Lock, Unlock, Zap, Server, Activity, ShieldHalf, KeyRound, Timer } from 'lucide-react';
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  KeyRound,
+  Lock,
+  Server,
+  ShieldCheck,
+  ShieldHalf,
+  Timer,
+  Unlock,
+  X,
+  Zap
+} from 'lucide-react';
 import IrisTransition from './IrisTransition';
 import useGlitchEffect from './hooks/useGlitchEffect.jsx';
 import useVaultLogs from './hooks/useVaultLogs.js';
@@ -14,6 +27,9 @@ const AUTH_STEPS = {
   VERIFY: 'VERIFY',
   GRANTED: 'GRANTED'
 };
+const ACCESS_GRANTED = 'ACCESS GRANTED';
+const ACCESS_DENIED = 'ACCESS DENIED';
+const CORRECT_PATTERN = '101';
 
 const readJsonSafely = async (response) => {
   try {
@@ -21,6 +37,20 @@ const readJsonSafely = async (response) => {
   } catch {
     return {};
   }
+};
+
+const normalizePattern = (value) => {
+  const raw = String(value ?? '')
+    .replace(/[^01]/g, '')
+    .slice(0, 3);
+
+  return raw.padEnd(3, '0');
+};
+
+const getAttemptTone = (failCount) => {
+  if (failCount >= 3) return 'danger';
+  if (failCount >= 1) return 'warning';
+  return 'safe';
 };
 
 const App = () => {
@@ -36,6 +66,8 @@ const App = () => {
   const [otp, setOtp] = useState('');
   const [otpError, setOtpError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [failCount, setFailCount] = useState(0);
+  const [showOTPFallback, setShowOTPFallback] = useState(false);
   const { triggerGlitch, GlitchOverlay } = useGlitchEffect();
   const { logs: backendLogs, isConnected: backendConnected } = useVaultLogs();
 
@@ -111,24 +143,42 @@ const App = () => {
     };
   }, [isUnlocked]);
 
-  const addLog = (action, isSuccess) => {
+  const addLog = (action, isSuccess, pattern) => {
     const time = new Date().toLocaleTimeString();
-    setLogs((previous) => [{ time, action, isSuccess }, ...previous].slice(0, 10));
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    setLogs((previous) => [
+      { id, time, action, isSuccess, pattern: normalizePattern(pattern) },
+      ...previous
+    ].slice(0, 10));
   };
 
   const handleNewData = (newStatus, newValue) => {
-    setSensorData(String(newValue));
+    const nextPattern = normalizePattern(newValue);
+    setSensorData(nextPattern);
 
     if (newStatus !== accessStatus) {
       setAccessStatus(newStatus);
 
-      if (newStatus === 'ACCESS DENIED' && !isUnlocked && authStep !== AUTH_STEPS.GRANTED) {
+      if (newStatus === ACCESS_DENIED && !isUnlocked && authStep !== AUTH_STEPS.GRANTED) {
         triggerGlitch();
-        addLog('ACCESS DENIED', false);
+        addLog(ACCESS_DENIED, false, nextPattern);
+        setFailCount((previous) => {
+          const nextCount = previous + 1;
+          if (nextCount >= 3) setShowOTPFallback(true);
+          return nextCount;
+        });
       }
 
-      if (newStatus === 'ACCESS GRANTED' && isUnlocked) {
-        addLog('ACCESS GRANTED', true);
+      if (newStatus === ACCESS_GRANTED) {
+        setFailCount(0);
+        setShowOTPFallback(false);
+        setAuthStep(AUTH_STEPS.GRANTED);
+        addLog(ACCESS_GRANTED, true, nextPattern);
+
+        if (!isUnlocked) {
+          setShowIris(true);
+        }
       }
     }
   };
@@ -200,10 +250,9 @@ const App = () => {
         return;
       }
 
-      setAuthStep(AUTH_STEPS.GRANTED);
       setOtp('');
       setOtpError('');
-      setShowIris(true);
+      handleNewData(ACCESS_GRANTED, CORRECT_PATTERN);
     } catch {
       setOtpError('Unable to reach the backend. Please try again.');
     } finally {
@@ -216,6 +265,8 @@ const App = () => {
     setShowIris(false);
     setAccessStatus('LOCKED');
     setTimeRemaining(INACTIVITY_TIMEOUT);
+    setFailCount(0);
+    setShowOTPFallback(false);
     resetAuthFlow();
 
     if (!MOCK_MODE) {
@@ -227,8 +278,8 @@ const App = () => {
     }
   };
 
-  const mockSuccess = () => handleNewData('ACCESS GRANTED', '111');
-  const mockFail = () => handleNewData('ACCESS DENIED', '000');
+  const mockSuccess = () => handleNewData(ACCESS_GRANTED, CORRECT_PATTERN);
+  const mockFail = () => handleNewData(ACCESS_DENIED, '000');
 
   return (
     <div className="app-wrapper">
@@ -255,7 +306,7 @@ const App = () => {
         animate={{
           background: isUnlocked
             ? 'radial-gradient(circle at 50% 50%, rgba(0, 255, 136, 0.05) 0%, rgba(13, 15, 18, 0) 70%)'
-            : accessStatus === 'ACCESS DENIED'
+            : accessStatus === ACCESS_DENIED
               ? 'radial-gradient(circle at 50% 50%, rgba(255, 51, 102, 0.08) 0%, rgba(13, 15, 18, 0) 70%)'
               : 'radial-gradient(circle at 50% 50%, rgba(0, 229, 255, 0.03) 0%, rgba(13, 15, 18, 0) 70%)'
         }}
@@ -272,6 +323,7 @@ const App = () => {
             otp={otp}
             otpError={otpError}
             isLoading={isLoading}
+            showOTPFallback={showOTPFallback}
             onEmailChange={(value) => {
               setUserEmail(value);
               if (otpError) setOtpError('');
@@ -282,6 +334,13 @@ const App = () => {
             }}
             onRequestOTP={handleRequestOTP}
             onVerifyOTP={handleVerifyOTP}
+            onFallbackSuccess={() => {
+              handleNewData(ACCESS_GRANTED, CORRECT_PATTERN);
+            }}
+            onFallbackDismiss={() => {
+              setFailCount(0);
+              setShowOTPFallback(false);
+            }}
             onMockSuccess={mockSuccess}
             onMockFail={mockFail}
           />
@@ -294,6 +353,7 @@ const App = () => {
               sensorData={sensorData}
               logs={mergedLogs}
               backendConnected={backendConnected}
+              failCount={failCount}
               url={BACKEND_URL}
             />
           </div>
@@ -310,14 +370,17 @@ const LockScreen = ({
   otp,
   otpError,
   isLoading,
+  showOTPFallback,
   onEmailChange,
   onOtpChange,
   onRequestOTP,
   onVerifyOTP,
+  onFallbackSuccess,
+  onFallbackDismiss,
   onMockSuccess,
   onMockFail
 }) => {
-  const isDenied = status === 'ACCESS DENIED';
+  const isDenied = status === ACCESS_DENIED;
   const isVerifyStep = authStep === AUTH_STEPS.VERIFY;
 
   return (
@@ -407,6 +470,16 @@ const LockScreen = ({
         )}
       </form>
 
+      <OTPFallbackModal
+        show={showOTPFallback}
+        onSuccess={() => {
+          onFallbackSuccess();
+        }}
+        onDismiss={() => {
+          onFallbackDismiss();
+        }}
+      />
+
       {MOCK_MODE && (
         <div className="mock-controls">
           <button onClick={onMockSuccess} className="btn-mock success">Mock Grant</button>
@@ -417,7 +490,240 @@ const LockScreen = ({
   );
 };
 
-const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendConnected, url }) => {
+const OTPFallbackModal = ({ show, onSuccess, onDismiss }) => {
+  const [otpEmail, setOtpEmail] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [otpStep, setOtpStep] = useState('request');
+  const [otpError, setOtpError] = useState('');
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [otpSuccess, setOtpSuccess] = useState(false);
+  const successTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!show) {
+      setOtpCode('');
+      setOtpStep('request');
+      setOtpError('');
+      setOtpLoading(false);
+      setOtpSuccess(false);
+    }
+  }, [show]);
+
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
+
+  const handleRequestOTP = async () => {
+    if (!otpEmail.trim()) {
+      setOtpError('Email is required');
+      return;
+    }
+
+    setOtpLoading(true);
+    setOtpError('');
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/auth/request-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: otpEmail.trim() })
+      });
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        setOtpError(data.error || data.message || 'Failed to send OTP');
+        return;
+      }
+
+      setOtpStep('verify');
+      setOtpCode('');
+      setOtpError('');
+    } catch {
+      setOtpError('Could not reach server');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleVerifyOTP = async () => {
+    if (!otpCode.trim()) {
+      setOtpError('OTP is required');
+      return;
+    }
+
+    setOtpLoading(true);
+    setOtpError('');
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: otpEmail.trim(), otp: otpCode.trim() })
+      });
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        setOtpError(data.message || data.error || 'OTP verification failed');
+        return;
+      }
+
+      setOtpSuccess(true);
+      successTimerRef.current = window.setTimeout(() => {
+        onSuccess();
+      }, 1000);
+    } catch {
+      setOtpError('Could not reach server');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  if (!show) return null;
+
+  return (
+    <div className="otp-modal-overlay">
+      <div className="otp-modal-card">
+        <button type="button" className="otp-close-button" onClick={onDismiss}>
+          <X size={18} />
+        </button>
+
+        {otpSuccess ? (
+          <div className="otp-success-state">
+            <CheckCircle2 size={56} className="otp-success-icon" />
+            <h2 className="otp-modal-title">Backup Authentication</h2>
+            <p className="otp-success-text">Access granted via backup method</p>
+          </div>
+        ) : (
+          <>
+            <div className="otp-modal-header">
+              <h2 className="otp-modal-title">Backup Authentication</h2>
+              <div className="otp-warning-badge">
+                <AlertTriangle size={14} />
+                Primary method failed 3 times
+              </div>
+            </div>
+
+            {otpStep === 'request' ? (
+              <div className="otp-modal-body">
+                <input
+                  className="otp-email-input"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="Enter your backup email"
+                  value={otpEmail}
+                  onChange={(event) => {
+                    setOtpEmail(event.target.value);
+                    if (otpError) setOtpError('');
+                  }}
+                  disabled={otpLoading}
+                />
+                {otpError ? <p className="auth-error">{otpError}</p> : null}
+                <button type="button" className="btn-glass primary otp-modal-action" disabled={otpLoading} onClick={handleRequestOTP}>
+                  {otpLoading ? 'Sending OTP...' : 'Send OTP'}
+                </button>
+              </div>
+            ) : (
+              <div className="otp-modal-body">
+                <input
+                  className="otp-input"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  placeholder="000000"
+                  value={otpCode}
+                  onChange={(event) => {
+                    setOtpCode(event.target.value.replace(/\D/g, '').slice(0, 6));
+                    if (otpError) setOtpError('');
+                  }}
+                  disabled={otpLoading}
+                />
+                {otpError ? <p className="auth-error">{otpError}</p> : null}
+                <button type="button" className="btn-glass primary otp-modal-action" disabled={otpLoading} onClick={handleVerifyOTP}>
+                  {otpLoading ? 'Verifying...' : 'Verify'}
+                </button>
+                <button
+                  type="button"
+                  className="otp-link-button"
+                  disabled={otpLoading}
+                  onClick={() => {
+                    setOtpStep('request');
+                    setOtpCode('');
+                    setOtpError('');
+                  }}
+                >
+                  Resend OTP
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const TouchDots = ({ pattern }) => (
+  <div className="touch-sequence-dots">
+    {normalizePattern(pattern).split('').map((value, index) => (
+      <div key={`touch-${index}`} className="touch-sequence-node">
+        <div className={`touch-sequence-dot ${value === '1' ? 'active' : ''}`} />
+        <span>T{index + 1}</span>
+      </div>
+    ))}
+  </div>
+);
+
+const TouchSequenceMonitor = ({ sensorData, failCount, logs }) => {
+  const history = logs
+    .filter((log) => log.action === ACCESS_GRANTED || log.action === ACCESS_DENIED)
+    .slice(0, 5);
+  const attemptTone = getAttemptTone(failCount);
+
+  return (
+    <div className="bento-card col-span-2 glass-panel">
+      <h3 className="card-title">
+        <Zap size={18} />
+        Touch Sequence Monitor
+      </h3>
+
+      <TouchDots pattern={sensorData} />
+
+      <div className="attempt-summary">
+        <div className={`attempt-label attempt-${attemptTone}`}>Attempt {failCount} / 3</div>
+        <div className="attempt-bar">
+          {[1, 2, 3].map((segment) => (
+            <span key={segment} className={`attempt-segment ${failCount >= segment ? 'filled' : ''}`} />
+          ))}
+        </div>
+      </div>
+
+      {failCount >= 3 ? (
+        <div className="attempt-warning-banner">Maximum attempts reached — Backup OTP sent</div>
+      ) : null}
+
+      <div className="sequence-history">
+        {history.length === 0 ? (
+          <p className="dim-text">No access attempts recorded yet.</p>
+        ) : (
+          history.map((log, index) => (
+            <div key={log.id ? String(log.id) : `${log.action}-${log.time}-${index}`} className="sequence-history-item">
+              <TouchDots pattern={log.pattern || '000'} />
+              <span className={`sequence-status ${log.isSuccess ? 'ok' : 'err'}`}>
+                {log.isSuccess ? 'GRANTED' : 'DENIED'}
+              </span>
+              <span className="dim-text text-small">{log.time}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
+const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendConnected, failCount, url }) => {
   const [sending, setSending] = React.useState(false);
   const [controlMsg, setControlMsg] = React.useState(null);
   const [lastCmd, setLastCmd] = React.useState(null);
@@ -500,8 +806,8 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
           </h3>
           <div className="sensor-array">
             {[0, 1, 2].map((index) => {
-              const binary = Number(sensorData).toString(2).padStart(3, '0').slice(-3);
-              const isActive = binary[index] === '1';
+              const pattern = normalizePattern(sensorData);
+              const isActive = pattern[index] === '1';
 
               return (
                 <div key={index} className="sensor-node">
@@ -516,6 +822,8 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
           </div>
         </div>
 
+        <TouchSequenceMonitor sensorData={sensorData} failCount={failCount} logs={logs} />
+
         <div className="bento-card col-span-2 glass-panel">
           <h3 className="card-title">
             <Activity size={18} />
@@ -526,7 +834,7 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
               <p className="dim-text text-center">No recent activity.</p>
             ) : (
               logs.map((log, index) => (
-                <div key={index} className={`log-row ${log.isSuccess ? 'border-green' : 'border-red'}`}>
+                <div key={log.id ? String(log.id) : index} className={`log-row ${log.isSuccess ? 'border-green' : 'border-red'}`}>
                   <span>{log.action}</span>
                   <span className="dim-text text-small">{log.time}</span>
                 </div>
@@ -542,10 +850,18 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
           </h3>
           <div className="control-panel">
             <motion.button className="btn-control unlock" whileTap={{ scale: 0.95 }} disabled={sending} onClick={() => sendControl(1)}>
-              {sending && lastCmd === 'unlock' ? 'Sending...' : <><Unlock size={18} /> Unlock (V2=1)</>}
+              {sending && lastCmd === 'unlock' ? 'Sending...' : (
+                <>
+                  <Unlock size={18} /> Unlock (V2=1)
+                </>
+              )}
             </motion.button>
             <motion.button className="btn-control lock" whileTap={{ scale: 0.95 }} disabled={sending} onClick={() => sendControl(0)}>
-              {sending && lastCmd === 'lock' ? 'Sending...' : <><Lock size={18} /> Lock (V2=0)</>}
+              {sending && lastCmd === 'lock' ? 'Sending...' : (
+                <>
+                  <Lock size={18} /> Lock (V2=0)
+                </>
+              )}
             </motion.button>
           </div>
           {controlMsg ? <div className={`control-feedback ${controlMsg.ok ? 'ok' : 'err'}`}>{controlMsg.text}</div> : null}
