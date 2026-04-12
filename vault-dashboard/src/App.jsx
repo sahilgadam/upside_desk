@@ -45,7 +45,7 @@ const App = () => {
 
     return combined
       .filter((log) => {
-        const key = `${log.action}-${log.time}`;
+        const key = log.id ? String(log.id) : `${log.action}-${log.time}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;

@@ -20,7 +20,7 @@ const useVaultLogs = () => {
           id: l.id,
           action: l.status,
           time: l.timestamp,
-          isSuccess: l.flag === '1'
+          isSuccess: l.flag === '0'
         })).reverse().slice(0, 10);
 
         setLogs(normalized);

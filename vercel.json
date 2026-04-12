@@ -1,7 +1,18 @@
 {
   "version": 2,
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "/vault-backend/server.js" },
-    { "source": "/(.*)", "destination": "/vault-dashboard/index.html" }
+  "builds": [
+    {
+      "src": "vault-backend/server.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "vault-dashboard/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "dist" }
+    }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "vault-backend/server.js" },
+    { "src": "/(.*)", "dest": "vault-dashboard/$1" }
   ]
 }

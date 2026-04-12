@@ -7,16 +7,23 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 export function useGlitchEffect() {
   const [isGlitching, setIsGlitching] = useState(false);
   const timerRef = useRef(null);
+  const glitchingRef = useRef(false);
+
+  useEffect(() => {
+    glitchingRef.current = isGlitching;
+  }, [isGlitching]);
 
   const triggerGlitch = useCallback(() => {
-    if (isGlitching) return;
+    if (glitchingRef.current) return;
+    glitchingRef.current = true;
     setIsGlitching(true);
     
     // Auto-stop after exactly 1.8 seconds
     timerRef.current = setTimeout(() => {
+      glitchingRef.current = false;
       setIsGlitching(false);
     }, 1800);
-  }, [isGlitching]);
+  }, []);
 
   useEffect(() => {
     return () => {
