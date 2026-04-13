@@ -3,3 +3,5 @@ node_modules/
 logs.json
 logs/
 *.log
+uploads/
+files-meta.json

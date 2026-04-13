@@ -4,13 +4,20 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  Download,
+  File,
+  FileLock2,
+  FileText,
+  Image as ImageIcon,
   KeyRound,
   Lock,
   Server,
   ShieldCheck,
   ShieldHalf,
   Timer,
+  Trash2,
   Unlock,
+  Upload,
   X,
   Zap
 } from 'lucide-react';
@@ -51,6 +58,17 @@ const getAttemptTone = (failCount) => {
   if (failCount >= 3) return 'danger';
   if (failCount >= 1) return 'warning';
   return 'safe';
+};
+
+const truncateFileName = (name) => {
+  if (!name) return 'Unnamed file';
+  return name.length > 30 ? `${name.slice(0, 27)}...` : name;
+};
+
+const formatFileSize = (bytes) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
 };
 
 const App = () => {
@@ -723,6 +741,161 @@ const TouchSequenceMonitor = ({ sensorData, failCount, logs }) => {
   );
 };
 
+const FileCabinet = ({ url }) => {
+  const [files, setFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [deleting, setDeleting] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const fetchFiles = async () => {
+    try {
+      const response = await fetch(`${url}/api/files`);
+      const data = await readJsonSafely(response);
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to load files');
+      }
+
+      setFiles(Array.isArray(data.files) ? data.files : []);
+      setUploadError('');
+    } catch (err) {
+      setUploadError(err.message || 'Could not load stored files');
+    }
+  };
+
+  useEffect(() => {
+    fetchFiles();
+    const interval = setInterval(fetchFiles, 5000);
+
+    return () => clearInterval(interval);
+  }, [url]);
+
+  const handleUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    setUploading(true);
+    setUploadError('');
+
+    try {
+      const response = await fetch(`${url}/api/files/upload`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to upload file');
+      }
+
+      await fetchFiles();
+    } catch (err) {
+      setUploadError(err.message || 'Failed to upload file');
+    } finally {
+      setUploading(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleDownload = (file) => {
+    window.open(`${url}/api/files/download/${file.id}`, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleDelete = async (id) => {
+    setDeleting(String(id));
+
+    try {
+      const response = await fetch(`${url}/api/files/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await readJsonSafely(response);
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to delete file');
+      }
+
+      await fetchFiles();
+    } catch (err) {
+      setUploadError(err.message || 'Failed to delete file');
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const getFileIcon = (mimetype) => {
+    if (mimetype === 'application/pdf') return <FileText size={18} className="file-icon-pdf" />;
+    if (mimetype?.startsWith('image/')) return <ImageIcon size={18} className="file-icon-image" />;
+    return <File size={18} className="file-icon-default" />;
+  };
+
+  return (
+    <div className="bento-card col-span-3 glass-panel">
+      <div className="file-cabinet-header">
+        <h3 className="card-title">
+          <FileLock2 size={18} />
+          Secure File Cabinet
+        </h3>
+        <div className="file-cabinet-actions">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="*/*"
+            className="hidden-file-input"
+            onChange={handleUpload}
+          />
+          <button
+            type="button"
+            className="btn-glass primary"
+            disabled={uploading}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload size={16} />
+            {uploading ? 'Uploading...' : 'Upload File'}
+          </button>
+        </div>
+      </div>
+
+      {uploadError ? <p className="auth-error file-upload-error">{uploadError}</p> : null}
+
+      <div className="file-cabinet-list">
+        {files.length === 0 ? (
+          <p className="dim-text text-center">No files stored. Upload your first secure document.</p>
+        ) : (
+          files.map((file) => (
+            <div key={String(file.id)} className="file-row">
+              <div className="file-row-icon">{getFileIcon(file.mimetype)}</div>
+              <div className="file-row-content">
+                <div className="file-name" title={file.originalName}>{truncateFileName(file.originalName)}</div>
+                <div className="file-meta">
+                  {formatFileSize(file.size)} • {file.uploadedAt}
+                </div>
+              </div>
+              <div className="file-actions">
+                <button type="button" className="btn-file-action download" onClick={() => handleDownload(file)}>
+                  <Download size={14} />
+                  Download
+                </button>
+                <button
+                  type="button"
+                  className="btn-file-action delete"
+                  disabled={deleting === String(file.id)}
+                  onClick={() => handleDelete(file.id)}
+                >
+                  <Trash2 size={14} />
+                  {deleting === String(file.id) ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
+
 const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendConnected, failCount, url }) => {
   const [sending, setSending] = React.useState(false);
   const [controlMsg, setControlMsg] = React.useState(null);
@@ -842,6 +1015,8 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
             )}
           </div>
         </div>
+
+        <FileCabinet url={url} />
 
         <div className="bento-card col-span-2 glass-panel">
           <h3 className="card-title">

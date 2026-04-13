@@ -5,6 +5,7 @@ const cors = require("cors");
 const axios = require("axios");
 const crypto = require("crypto");
 const fs = require("fs");
+const multer = require("multer");
 const nodemailer = require("nodemailer");
 const path = require("path");
 
@@ -61,6 +62,35 @@ const transporter =
       })
     : null;
 const otpStore = new Map();
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, unique + path.extname(file.originalname));
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 }
+});
+
+let fileRecords = [];
+const FILES_META = path.join(__dirname, "files-meta.json");
+
+if (fs.existsSync(FILES_META)) {
+  try {
+    fileRecords = JSON.parse(fs.readFileSync(FILES_META, "utf8"));
+  } catch (e) {
+    fileRecords = [];
+  }
+}
+
+function saveFileMeta() {
+  fs.writeFileSync(FILES_META, JSON.stringify(fileRecords, null, 2));
+}
 
 // ─── API ROUTES ───────────────────────────────────────────────
 
@@ -124,6 +154,75 @@ app.post("/api/auth/verify-otp", (req, res) => {
 
   otpStore.delete(email);
   return res.status(200).json({ success: true, message: "Access granted" });
+});
+
+app.post("/api/files/upload", upload.single("file"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: "No file uploaded" });
+    }
+
+    const record = {
+      id: Date.now(),
+      originalName: req.file.originalname,
+      storedName: req.file.filename,
+      size: req.file.size,
+      mimetype: req.file.mimetype,
+      uploadedAt: timestamp()
+    };
+
+    fileRecords.push(record);
+    saveFileMeta();
+
+    return res.json({ success: true, file: record });
+  } catch (err) {
+    console.error("File Upload Error:", err.message);
+    return res.status(500).json({ success: false, error: "Failed to upload file" });
+  }
+});
+
+app.get("/api/files", (req, res) => {
+  res.json({ count: fileRecords.length, files: fileRecords.slice().reverse() });
+});
+
+app.get("/api/files/download/:id", (req, res) => {
+  const record = fileRecords.find((file) => String(file.id) === req.params.id);
+
+  if (!record) {
+    return res.status(404).json({ success: false, error: "File not found" });
+  }
+
+  const downloadName = path.basename(record.originalName);
+  const filePath = path.join(uploadsDir, record.storedName);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ success: false, error: "File not found on disk" });
+  }
+
+  res.setHeader("Content-Disposition", `attachment; filename="${downloadName}"`);
+  return res.download(record.storedName, downloadName, { root: uploadsDir });
+});
+
+app.delete("/api/files/:id", (req, res) => {
+  const fileIndex = fileRecords.findIndex((file) => String(file.id) === req.params.id);
+
+  if (fileIndex === -1) {
+    return res.status(404).json({ success: false, error: "File not found" });
+  }
+
+  const record = fileRecords[fileIndex];
+  const filePath = path.join(uploadsDir, record.storedName);
+
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (err) {
+    console.error("File Delete Error:", err.message);
+  }
+
+  fileRecords.splice(fileIndex, 1);
+  saveFileMeta();
+
+  return res.json({ success: true });
 });
 
 app.get("/api/status", async (req, res) => {
