@@ -12,6 +12,7 @@ import {
   KeyRound,
   Lock,
   Server,
+  ShieldAlert,
   ShieldCheck,
   ShieldHalf,
   Timer,
@@ -36,7 +37,6 @@ const AUTH_STEPS = {
 };
 const ACCESS_GRANTED = 'ACCESS GRANTED';
 const ACCESS_DENIED = 'ACCESS DENIED';
-const CORRECT_PATTERN = '101';
 
 const readJsonSafely = async (response) => {
   try {
@@ -71,6 +71,11 @@ const formatFileSize = (bytes) => {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 };
 
+const patternLabel = (pattern) => {
+  const normalized = normalizePattern(pattern);
+  return normalized.split('').map((value, index) => `T${index + 1}:${value}`).join('  ');
+};
+
 const App = () => {
   const [authStep, setAuthStep] = useState(AUTH_STEPS.REQUEST);
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -86,6 +91,7 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [failCount, setFailCount] = useState(0);
   const [showOTPFallback, setShowOTPFallback] = useState(false);
+  const [unlockMethod, setUnlockMethod] = useState('touch');
   const { triggerGlitch, GlitchOverlay } = useGlitchEffect();
   const { logs: backendLogs, isConnected: backendConnected } = useVaultLogs();
 
@@ -171,6 +177,44 @@ const App = () => {
     ].slice(0, 10));
   };
 
+  const triggerVaultOpen = () => {
+    if (!isUnlocked) setShowIris(true);
+  };
+
+  const handleOTPSuccess = async (email) => {
+    setUnlockMethod('otp');
+    setAccessStatus(ACCESS_GRANTED);
+    setFailCount(0);
+    setShowOTPFallback(false);
+    setAuthStep(AUTH_STEPS.GRANTED);
+    addLog('OTP BACKUP USED', true, sensorData);
+    triggerVaultOpen();
+
+    try {
+      await fetch(`${BACKEND_URL}/api/access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'OTP BACKUP USED',
+          flag: '1',
+          email: email || userEmail.trim() || undefined
+        })
+      });
+    } catch {
+      // Unlock should still proceed if audit logging fails.
+    }
+  };
+
+  const handleAuthOtpSuccess = () => {
+    setUnlockMethod('otp');
+    setAccessStatus(ACCESS_GRANTED);
+    setFailCount(0);
+    setShowOTPFallback(false);
+    setAuthStep(AUTH_STEPS.GRANTED);
+    addLog('EMAIL OTP AUTH', true, sensorData);
+    triggerVaultOpen();
+  };
+
   const handleNewData = (newStatus, newValue) => {
     const nextPattern = normalizePattern(newValue);
     setSensorData(nextPattern);
@@ -189,14 +233,12 @@ const App = () => {
       }
 
       if (newStatus === ACCESS_GRANTED) {
+        setUnlockMethod('touch');
         setFailCount(0);
         setShowOTPFallback(false);
         setAuthStep(AUTH_STEPS.GRANTED);
         addLog(ACCESS_GRANTED, true, nextPattern);
-
-        if (!isUnlocked) {
-          setShowIris(true);
-        }
+        triggerVaultOpen();
       }
     }
   };
@@ -270,7 +312,7 @@ const App = () => {
 
       setOtp('');
       setOtpError('');
-      handleNewData(ACCESS_GRANTED, CORRECT_PATTERN);
+      handleAuthOtpSuccess();
     } catch {
       setOtpError('Unable to reach the backend. Please try again.');
     } finally {
@@ -285,18 +327,19 @@ const App = () => {
     setTimeRemaining(INACTIVITY_TIMEOUT);
     setFailCount(0);
     setShowOTPFallback(false);
+    setUnlockMethod('touch');
     resetAuthFlow();
 
     if (!MOCK_MODE) {
       fetch(`${BACKEND_URL}/api/control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: 'LOCKED', pin: 'V0' })
+        body: JSON.stringify({ value: 0, pin: 'V2' })
       }).catch(console.error);
     }
   };
 
-  const mockSuccess = () => handleNewData(ACCESS_GRANTED, CORRECT_PATTERN);
+  const mockSuccess = () => handleNewData(ACCESS_GRANTED, '101');
   const mockFail = () => handleNewData(ACCESS_DENIED, '000');
 
   return (
@@ -352,9 +395,7 @@ const App = () => {
             }}
             onRequestOTP={handleRequestOTP}
             onVerifyOTP={handleVerifyOTP}
-            onFallbackSuccess={() => {
-              handleNewData(ACCESS_GRANTED, CORRECT_PATTERN);
-            }}
+            onFallbackSuccess={handleOTPSuccess}
             onFallbackDismiss={() => {
               setFailCount(0);
               setShowOTPFallback(false);
@@ -372,6 +413,7 @@ const App = () => {
               logs={mergedLogs}
               backendConnected={backendConnected}
               failCount={failCount}
+              unlockMethod={unlockMethod}
               url={BACKEND_URL}
             />
           </div>
@@ -488,15 +530,7 @@ const LockScreen = ({
         )}
       </form>
 
-      <OTPFallbackModal
-        show={showOTPFallback}
-        onSuccess={() => {
-          onFallbackSuccess();
-        }}
-        onDismiss={() => {
-          onFallbackDismiss();
-        }}
-      />
+      <OTPFallbackModal show={showOTPFallback} onSuccess={onFallbackSuccess} onDismiss={onFallbackDismiss} />
 
       {MOCK_MODE && (
         <div className="mock-controls">
@@ -589,7 +623,7 @@ const OTPFallbackModal = ({ show, onSuccess, onDismiss }) => {
 
       setOtpSuccess(true);
       successTimerRef.current = window.setTimeout(() => {
-        onSuccess();
+        onSuccess(otpEmail.trim());
       }, 1000);
     } catch {
       setOtpError('Could not reach server');
@@ -694,9 +728,9 @@ const TouchDots = ({ pattern }) => (
   </div>
 );
 
-const TouchSequenceMonitor = ({ sensorData, failCount, logs }) => {
+const TouchSequenceMonitor = ({ sensorData, failCount, logs, unlockMethod }) => {
   const history = logs
-    .filter((log) => log.action === ACCESS_GRANTED || log.action === ACCESS_DENIED)
+    .filter((log) => [ACCESS_GRANTED, ACCESS_DENIED, 'OTP BACKUP USED', 'EMAIL OTP AUTH'].includes(log.action))
     .slice(0, 5);
   const attemptTone = getAttemptTone(failCount);
 
@@ -707,7 +741,14 @@ const TouchSequenceMonitor = ({ sensorData, failCount, logs }) => {
         Touch Sequence Monitor
       </h3>
 
-      <TouchDots pattern={sensorData} />
+      {unlockMethod === 'otp' ? (
+        <div className="otp-backup-banner">
+          <ShieldHalf size={18} />
+          Unlocked via OTP Backup Authentication
+        </div>
+      ) : (
+        <TouchDots pattern={sensorData} />
+      )}
 
       <div className="attempt-summary">
         <div className={`attempt-label attempt-${attemptTone}`}>Attempt {failCount} / 3</div>
@@ -728,7 +769,14 @@ const TouchSequenceMonitor = ({ sensorData, failCount, logs }) => {
         ) : (
           history.map((log, index) => (
             <div key={log.id ? String(log.id) : `${log.action}-${log.time}-${index}`} className="sequence-history-item">
-              <TouchDots pattern={log.pattern || '000'} />
+              {log.action === 'OTP BACKUP USED' || log.action === 'EMAIL OTP AUTH' ? (
+                <div className="otp-history-pill">
+                  <ShieldHalf size={14} />
+                  OTP
+                </div>
+              ) : (
+                <TouchDots pattern={log.pattern || '000'} />
+              )}
               <span className={`sequence-status ${log.isSuccess ? 'ok' : 'err'}`}>
                 {log.isSuccess ? 'GRANTED' : 'DENIED'}
               </span>
@@ -737,6 +785,275 @@ const TouchSequenceMonitor = ({ sensorData, failCount, logs }) => {
           ))
         )}
       </div>
+    </div>
+  );
+};
+
+const SecurityAlertPanel = ({ url }) => {
+  const [alerts, setAlerts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchAlerts = async () => {
+    try {
+      const response = await fetch(`${url}/api/alerts`);
+      const data = await readJsonSafely(response);
+      if (!response.ok) throw new Error();
+      setAlerts(Array.isArray(data.alerts) ? data.alerts : []);
+    } catch {
+      setAlerts([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAlerts();
+    const interval = setInterval(fetchAlerts, 10000);
+    return () => clearInterval(interval);
+  }, [url]);
+
+  const getAlertConfig = (type) => {
+    switch (type) {
+      case 'LOCKOUT':
+        return { className: 'lockout', icon: <ShieldAlert size={18} className="alert-icon-red" /> };
+      case 'OTP_BACKUP':
+        return { className: 'otp-backup', icon: <ShieldHalf size={18} className="alert-icon-yellow" /> };
+      case 'PASSCODE_CHANGED':
+        return { className: 'passcode-changed', icon: <KeyRound size={18} className="alert-icon-blue" /> };
+      default:
+        return { className: '', icon: <ShieldCheck size={18} /> };
+    }
+  };
+
+  return (
+    <div className="bento-card col-span-1 glass-panel">
+      <h3 className="card-title">
+        <ShieldAlert size={18} />
+        Security Alerts
+      </h3>
+      <div className="alert-list">
+        {!loading && alerts.length === 0 ? (
+          <p className="dim-text text-center">No security events recorded</p>
+        ) : (
+          alerts.map((alert) => {
+            const config = getAlertConfig(alert.type);
+            return (
+              <div key={String(alert.id)} className={`alert-row ${config.className}`}>
+                {config.icon}
+                <div className="alert-message">
+                  <div>{alert.message}</div>
+                  {alert.email ? <div className="file-meta">{alert.email}</div> : null}
+                </div>
+                <div className="alert-time">{alert.timestamp}</div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+};
+
+const SequenceStepBuilder = ({ stepNumber, value, onToggle }) => {
+  const normalized = normalizePattern(value);
+
+  return (
+    <div className="step-builder">
+      <div className="step-label">Step {stepNumber}</div>
+      <div className="touch-toggles">
+        {[0, 1, 2].map((index) => {
+          const active = normalized[index] === '1';
+          return (
+            <button
+              key={`${stepNumber}-${index}`}
+              type="button"
+              className={`touch-toggle-btn ${active ? 'active' : 'inactive'}`}
+              onClick={() => onToggle(index)}
+            >
+              T{index + 1}
+            </button>
+          );
+        })}
+      </div>
+      <div className="step-pattern">{patternLabel(normalized)}</div>
+      {normalized === '000' ? <div className="step-error">Step must have at least one touch</div> : null}
+    </div>
+  );
+};
+
+const PasscodeChangePanel = ({ url }) => {
+  const [pcStep, setPcStep] = useState('idle');
+  const [pcEmail, setPcEmail] = useState('');
+  const [pcOtp, setPcOtp] = useState('');
+  const [pcError, setPcError] = useState('');
+  const [pcLoading, setPcLoading] = useState(false);
+  const [sequence, setSequence] = useState(['101', '000', '001']);
+
+  const updateSequenceBit = (stepIndex, bitIndex) => {
+    setSequence((previous) =>
+      previous.map((step, currentStepIndex) => {
+        if (currentStepIndex !== stepIndex) return step;
+        const chars = normalizePattern(step).split('');
+        chars[bitIndex] = chars[bitIndex] === '1' ? '0' : '1';
+        return chars.join('');
+      })
+    );
+  };
+
+  const handleRequestChange = async () => {
+    if (sequence.some((step) => normalizePattern(step) === '000')) {
+      setPcError('All steps must have at least one touch active');
+      return;
+    }
+
+    if (!pcEmail.trim()) {
+      setPcError('Authorization email is required');
+      return;
+    }
+
+    setPcLoading(true);
+    setPcError('');
+
+    try {
+      const response = await fetch(`${url}/api/passcode/request-change`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: pcEmail.trim() })
+      });
+      const data = await readJsonSafely(response);
+      if (!response.ok || !data.success) {
+        setPcError(data.error || data.message || 'Failed to request authorization code');
+        return;
+      }
+      setPcStep('verify');
+      setPcError('');
+    } catch {
+      setPcError('Could not reach server');
+    } finally {
+      setPcLoading(false);
+    }
+  };
+
+  const handleVerifyAndUpdate = async () => {
+    setPcLoading(true);
+    setPcError('');
+
+    try {
+      const response = await fetch(`${url}/api/passcode/verify-and-update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: pcEmail.trim(),
+          otp: pcOtp.trim(),
+          newSequence: sequence.map((step) => normalizePattern(step))
+        })
+      });
+      const data = await readJsonSafely(response);
+      if (!response.ok || !data.success) {
+        setPcError(data.message || data.error || 'Failed to update sequence');
+        return;
+      }
+      setPcStep('success');
+      setPcOtp('');
+      setPcError('');
+    } catch {
+      setPcError('Could not reach server');
+    } finally {
+      setPcLoading(false);
+    }
+  };
+
+  const resetPasscodeFlow = () => {
+    setPcStep('idle');
+    setPcOtp('');
+    setPcError('');
+  };
+
+  return (
+    <div className="bento-card col-span-2 glass-panel">
+      <div className="panel-title-row">
+        <h3 className="card-title">
+          <KeyRound size={18} />
+          Passcode Change Panel
+        </h3>
+        <span className="warning-badge">Requires OTP Authorization</span>
+      </div>
+
+      {pcStep === 'verify' ? (
+        <div className="otp-modal-body">
+          <p className="dim-text">Authorization code sent to {pcEmail}</p>
+          <input
+            className="otp-input"
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={6}
+            value={pcOtp}
+            onChange={(event) => {
+              setPcOtp(event.target.value.replace(/\D/g, '').slice(0, 6));
+              if (pcError) setPcError('');
+            }}
+            placeholder="000000"
+          />
+          {pcError ? <p className="auth-error">{pcError}</p> : null}
+          <button type="button" className="btn-glass primary otp-modal-action" disabled={pcLoading} onClick={handleVerifyAndUpdate}>
+            {pcLoading ? 'Updating...' : 'Confirm & Update Sequence'}
+          </button>
+          <button type="button" className="otp-link-button" disabled={pcLoading} onClick={resetPasscodeFlow}>
+            Resend
+          </button>
+        </div>
+      ) : pcStep === 'success' ? (
+        <div className="otp-success-state">
+          <CheckCircle2 size={56} className="otp-success-icon" />
+          <h2 className="otp-modal-title">Sequence updated successfully</h2>
+          <p className="dim-text">Restart or re-flash your ESP32 to load the new sequence from Blynk V2</p>
+          <button
+            type="button"
+            className="btn-glass primary"
+            onClick={() => {
+              setSequence(['101', '000', '001']);
+              setPcEmail('');
+              resetPasscodeFlow();
+            }}
+          >
+            Change Again
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="panel-subtitle">Design New Access Sequence</div>
+          <div className="sequence-builder">
+            {sequence.map((step, index) => (
+              <SequenceStepBuilder
+                key={`builder-${index}`}
+                stepNumber={index + 1}
+                value={step}
+                onToggle={(bitIndex) => updateSequenceBit(index, bitIndex)}
+              />
+            ))}
+          </div>
+          <div className="auth-field-group">
+            <label className="auth-label" htmlFor="passcode-email">Authorization Email</label>
+            <input
+              id="passcode-email"
+              className="auth-input"
+              type="email"
+              value={pcEmail}
+              onChange={(event) => {
+                setPcEmail(event.target.value);
+                if (pcError) setPcError('');
+              }}
+              placeholder="you@example.com"
+            />
+          </div>
+          {pcError ? <p className="auth-error">{pcError}</p> : null}
+          <button type="button" className="btn-glass primary" disabled={pcLoading} onClick={handleRequestChange}>
+            {pcLoading ? 'Sending Authorization...' : 'Request Change Authorization'}
+          </button>
+          <p className="dim-text">An OTP will be sent before the new access sequence is pushed to Blynk.</p>
+        </>
+      )}
     </div>
   );
 };
@@ -753,9 +1070,7 @@ const FileCabinet = ({ url }) => {
       const response = await fetch(`${url}/api/files`);
       const data = await readJsonSafely(response);
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to load files');
-      }
+      if (!response.ok) throw new Error(data.error || 'Failed to load files');
 
       setFiles(Array.isArray(data.files) ? data.files : []);
       setUploadError('');
@@ -767,7 +1082,6 @@ const FileCabinet = ({ url }) => {
   useEffect(() => {
     fetchFiles();
     const interval = setInterval(fetchFiles, 5000);
-
     return () => clearInterval(interval);
   }, [url]);
 
@@ -808,9 +1122,7 @@ const FileCabinet = ({ url }) => {
     setDeleting(String(id));
 
     try {
-      const response = await fetch(`${url}/api/files/${id}`, {
-        method: 'DELETE'
-      });
+      const response = await fetch(`${url}/api/files/${id}`, { method: 'DELETE' });
       const data = await readJsonSafely(response);
 
       if (!response.ok || !data.success) {
@@ -839,19 +1151,8 @@ const FileCabinet = ({ url }) => {
           Secure File Cabinet
         </h3>
         <div className="file-cabinet-actions">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="*/*"
-            className="hidden-file-input"
-            onChange={handleUpload}
-          />
-          <button
-            type="button"
-            className="btn-glass primary"
-            disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
-          >
+          <input ref={fileInputRef} type="file" accept="*/*" className="hidden-file-input" onChange={handleUpload} />
+          <button type="button" className="btn-glass primary" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
             <Upload size={16} />
             {uploading ? 'Uploading...' : 'Upload File'}
           </button>
@@ -896,10 +1197,10 @@ const FileCabinet = ({ url }) => {
   );
 };
 
-const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendConnected, failCount, url }) => {
-  const [sending, setSending] = React.useState(false);
-  const [controlMsg, setControlMsg] = React.useState(null);
-  const [lastCmd, setLastCmd] = React.useState(null);
+const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendConnected, failCount, unlockMethod, url }) => {
+  const [sending, setSending] = useState(false);
+  const [controlMsg, setControlMsg] = useState(null);
+  const [lastCmd, setLastCmd] = useState(null);
 
   const sendControl = async (value) => {
     setSending(true);
@@ -913,10 +1214,10 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value, pin: 'V2' })
       });
-      const data = await res.json();
+      const data = await readJsonSafely(res);
 
       if (res.ok) setControlMsg({ text: `Command sent: ${label.toUpperCase()}`, ok: true });
-      else setControlMsg({ text: `Backend error: ${data.error}`, ok: false });
+      else setControlMsg({ text: `Backend error: ${data.error || 'Unknown error'}`, ok: false });
     } catch (err) {
       setControlMsg({ text: `Network error: ${err.message}`, ok: false });
     } finally {
@@ -972,6 +1273,9 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
           </div>
         </div>
 
+        <SecurityAlertPanel url={url} />
+        <PasscodeChangePanel url={url} />
+
         <div className="bento-card col-span-1 glass-panel">
           <h3 className="card-title">
             <Zap size={18} />
@@ -995,7 +1299,7 @@ const Dashboard = ({ onLock, timeRemaining, isOnline, sensorData, logs, backendC
           </div>
         </div>
 
-        <TouchSequenceMonitor sensorData={sensorData} failCount={failCount} logs={logs} />
+        <TouchSequenceMonitor sensorData={sensorData} failCount={failCount} logs={logs} unlockMethod={unlockMethod} />
 
         <div className="bento-card col-span-2 glass-panel">
           <h3 className="card-title">

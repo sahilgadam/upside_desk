@@ -62,6 +62,8 @@ const transporter =
       })
     : null;
 const otpStore = new Map();
+const passcodeOtpStore = new Map();
+const securityAlerts = [];
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 
@@ -90,6 +92,46 @@ if (fs.existsSync(FILES_META)) {
 
 function saveFileMeta() {
   fs.writeFileSync(FILES_META, JSON.stringify(fileRecords, null, 2));
+}
+
+function addAlert(type, message, email) {
+  securityAlerts.unshift({
+    id: Date.now(),
+    type,
+    message,
+    email: email || null,
+    timestamp: timestamp()
+  });
+  if (securityAlerts.length > 100) securityAlerts.pop();
+}
+
+function getMostRecentOtpEmail() {
+  const emails = Array.from(otpStore.keys());
+  return emails.length ? emails[emails.length - 1] : null;
+}
+
+async function sendSecurityMail(to, subject, text) {
+  if (!to || !transporter) return;
+
+  try {
+    await transporter.sendMail({
+      from: EMAIL_USER,
+      to,
+      subject,
+      text
+    });
+  } catch (err) {
+    console.error("Security Mail Error:", err.message);
+  }
+}
+
+async function blynkSet(pin, value) {
+  if (!BLYNK_TOKEN) {
+    throw new Error("Blynk token not configured");
+  }
+
+  const url = `${BLYNK_BASE_URL}/update?token=${BLYNK_TOKEN}&${pin}=${value}`;
+  return axios.get(url);
 }
 
 // ─── API ROUTES ───────────────────────────────────────────────
@@ -264,9 +306,9 @@ app.get("/api/logs", (req, res) => {
   res.json({ count: accessLogs.length, logs: accessLogs.slice().reverse() });
 });
 
-app.post("/api/access", (req, res) => {
+app.post("/api/access", async (req, res) => {
   try {
-    const { status, flag } = req.body;
+    const { status, flag, email } = req.body;
   
     if (!status) {
       return res.status(400).json({ error: "Missing required 'status' field." });
@@ -283,6 +325,25 @@ app.post("/api/access", (req, res) => {
     if (accessLogs.length > 50) accessLogs.shift();
     saveLogs();
 
+    if (status === "LOCKED") {
+      const alertEmail =
+        typeof email === "string" && email.trim()
+          ? email.trim().toLowerCase()
+          : getMostRecentOtpEmail();
+
+      addAlert("LOCKOUT", "3 failed attempts — vault locked", alertEmail);
+
+      await sendSecurityMail(
+        alertEmail,
+        "VAULT SECURITY ALERT — Lockout Triggered",
+        `Your vault was locked after 3 failed access attempts at ${entry.timestamp}. If this was not you, take immediate action.`
+      );
+    }
+
+    if (status === "OTP BACKUP USED") {
+      addAlert("OTP_BACKUP", "Backup OTP auth was used to unlock vault", email || null);
+    }
+
     console.log(`🔔 ACCESS: ${status} | Time: ${entry.timestamp}`);
     res.status(200).json({ success: true, entry });
   } catch (err) {
@@ -292,22 +353,107 @@ app.post("/api/access", (req, res) => {
 });
 
 app.post("/api/control", async (req, res) => {
-  const { value, pin = "V2" } = req.body;
-
-  if (value === undefined) {
-    return res.status(400).json({ error: "Missing 'value' in control request." });
-  }
-
   try {
+    const { value, pin = "V2" } = req.body;
+
+    if (value === undefined) {
+      return res.status(400).json({ error: "Missing 'value' in control request." });
+    }
+
+    if (!BLYNK_TOKEN) {
+      return res.status(503).json({ error: "Blynk token not configured" });
+    }
+
     const url = `${BLYNK_BASE_URL}/update?token=${BLYNK_TOKEN}&${pin}=${value}`;
     const response = await axios.get(url);
-    res.json({ success: true, blynk_status: response.status });
+    return res.json({ success: true, blynk_status: response.status });
   } catch (err) {
-    res.status(500).json({ error: "Blynk connection failed" });
+    return res.status(500).json({ error: "Blynk unreachable", detail: err.message });
   }
 });
 
 // ─── START ────────────────────────────────────────────────────
+app.get("/api/alerts", (req, res) => {
+  res.json({ count: securityAlerts.length, alerts: securityAlerts });
+});
+
+app.post("/api/passcode/request-change", async (req, res) => {
+  try {
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+
+    if (!email) {
+      return res.status(400).json({ success: false, error: "Email is required" });
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ success: false, error: "Invalid email format" });
+    }
+
+    if (!transporter) {
+      return res.status(500).json({ success: false, error: "Email service is not configured" });
+    }
+
+    const otp = String(crypto.randomInt(100000, 1000000));
+    passcodeOtpStore.set(email, { otp, expiresAt: Date.now() + 300000 });
+
+    await transporter.sendMail({
+      from: EMAIL_USER,
+      to: email,
+      subject: "Vault Passcode Change Authorization",
+      text: `Your code to authorize vault passcode change is: ${otp}. Expires in 5 minutes. If you did not request this, secure your vault immediately.`
+    });
+
+    return res.json({ success: true, message: "Authorization code sent" });
+  } catch (err) {
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    if (email) passcodeOtpStore.delete(email);
+    return res.status(500).json({ success: false, error: err.message || "Failed to send authorization code" });
+  }
+});
+
+app.post("/api/passcode/verify-and-update", async (req, res) => {
+  try {
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    const otp = typeof req.body?.otp === "string" ? req.body.otp.trim() : "";
+    const newSequence = req.body?.newSequence;
+
+    if (!Array.isArray(newSequence) || newSequence.length !== 3) {
+      return res.status(400).json({ success: false, message: "New sequence must contain exactly 3 steps" });
+    }
+
+    for (let index = 0; index < newSequence.length; index += 1) {
+      const step = newSequence[index];
+      if (typeof step !== "string" || !/^[01]{3}$/.test(step) || step === "000") {
+        return res.status(400).json({ success: false, message: `Step ${index + 1} cannot be empty (000 means no touch)` });
+      }
+    }
+
+    const storedOtp = passcodeOtpStore.get(email);
+
+    if (!storedOtp) {
+      return res.status(401).json({ success: false, message: "No authorization code requested" });
+    }
+
+    if (Date.now() > storedOtp.expiresAt) {
+      passcodeOtpStore.delete(email);
+      return res.status(401).json({ success: false, message: "Authorization code expired" });
+    }
+
+    if (storedOtp.otp !== otp) {
+      return res.status(401).json({ success: false, message: "Invalid authorization code" });
+    }
+
+    passcodeOtpStore.delete(email);
+    const sequenceString = newSequence.join("-");
+    await blynkSet("V2", encodeURIComponent(sequenceString));
+    addAlert("PASSCODE_CHANGED", "Vault access sequence updated", email);
+    return res.json({ success: true, sequence: sequenceString });
+  } catch (err) {
+    const statusCode = err.message === "Blynk token not configured" ? 503 : 500;
+    return res.status(statusCode).json({ success: false, error: err.message || "Failed to update sequence" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`\n✅ UPSIDE DESK - Backend Active on Port ${PORT}\n`);
 });
